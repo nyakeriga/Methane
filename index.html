@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<!--
+    ================================================================
+    Methane (CH4) Molecule – 3D Interactive Model
+    Unit 5 Assignment
+    ================================================================
+    This application renders a 3D model of the Methane molecule
+    using the Three.js WebGL library. Key features include:
+
+      • 1 Carbon atom  (red sphere)   – center of the molecule
+      • 4 Hydrogen atoms (blue spheres) – tetrahedral arrangement
+      • 4 Bonds (white cylinders, gray emissive) connecting C → H
+      • Green ground plane that receives shadows
+      • Directional lighting that casts realistic shadows
+      • Automatic Y-axis animation (rotation)
+      • Mouse / touch drag controls that rotate ONLY the molecule
+        (the plane and lights remain stationary)
+    ================================================================
+-->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Methane CH₄ Molecule – 3D Model</title>
+
+    <!-- ======================== PAGE STYLES ======================== -->
+    <style>
+        /* Remove browser default margins; black background matches space theme */
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000000;
+        }
+
+        /* Canvas fills the entire viewport */
+        canvas {
+            display: block;
+        }
+
+        /* Semi-transparent label anchored to bottom-center of viewport */
+        #molecule-label {
+            position: absolute;
+            bottom: 28px;
+            width: 100%;
+            text-align: center;
+            color: #000000;
+            font-family: 'Times New Roman', Georgia, serif;
+            font-size: 30px;
+            font-weight: bold;
+            pointer-events: none; /* clicks pass through to canvas */
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Overlay label that matches the reference image caption -->
+    <div id="molecule-label">Methane CH<sub>4</sub></div>
+
+    <!-- ==================== THREE.JS IMPORT MAP ==================== -->
+    <!-- Map bare-specifier imports to the Three.js CDN (ES-module build) -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <!-- ==================== MAIN APPLICATION ==================== -->
+    <script type="module">
+        // ==============================================================
+        // IMPORTS
+        // ==============================================================
+        import * as THREE from 'three';
+
+        // ==============================================================
+        // GLOBAL VARIABLES
+        // These are accessible throughout the module for convenience.
+        // ==============================================================
+        let scene, camera, renderer;          // Core Three.js objects
+        let moleculeGroup;                     // Group holding all molecule parts
+        let isDragging       = false;          // Is the user currently dragging?
+        let previousMousePos = { x: 0, y: 0 }; // Last recorded pointer position
+
+        // ==============================================================
+        // CONSTANTS – Molecule Geometry & Appearance
+        // ==============================================================
+        const CARBON_RADIUS   = 0.70;  // Radius of the carbon atom (larger)
+        const HYDROGEN_RADIUS = 0.42;  // Radius of each hydrogen atom (smaller)
+        const BOND_RADIUS     = 0.12;  // Radius of the bond cylinders
+        const BOND_LENGTH     = 2.00;  // Center-to-center distance C → H
+        const SPHERE_SEGMENTS = 32;    // Lat / lon segments for spheres
+        const CYL_SEGMENTS    = 20;    // Radial segments for cylinders
+
+        // ==============================================================
+        // INITIALIZATION  –  called once on page load
+        // Sets up the renderer, scene, camera, lights, objects, controls.
+        // ==============================================================
+        function init() {
+
+            // ----------------------------------------------------------
+            // 1. SCENE
+            // The scene is the root container for every 3D object.
+            // ----------------------------------------------------------
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000); // Solid black sky
+
+            // ----------------------------------------------------------
+            // 2. CAMERA  (Perspective)
+            // Field-of-view 50°, near clip 0.1, far clip 1000.
+            // Positioned above and in front, angled downward toward origin.
+            // ----------------------------------------------------------
+            camera = new THREE.PerspectiveCamera(
+                50,                                       // FOV (degrees)
+                window.innerWidth / window.innerHeight,   // Aspect ratio
+                0.1,                                      // Near plane
+                1000                                      // Far plane
+            );
+            camera.position.set(0, 4.5, 9);   // Eye position
+            camera.lookAt(0, 0.5, 0);         // Look at molecule center
+
+            // ----------------------------------------------------------
+            // 3. RENDERER  (WebGL with antialiasing)
+            // Shadow mapping is enabled so the molecule casts shadows
+            // onto the green plane below it.
+            // ----------------------------------------------------------
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+
+            // Enable shadow maps with soft (PCF) filtering
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
+
+            // Append the <canvas> element to the page
+            document.body.appendChild(renderer.domElement);
+
+            // ----------------------------------------------------------
+            // 4. BUILD THE SCENE
+            // ----------------------------------------------------------
+            createLighting();       // Ambient + directional lights
+            createGroundPlane();    // Green plane (stationary)
+            createMethaneMolecule();// CH₄ model (rotatable group)
+
+            // ----------------------------------------------------------
+            // 5. INTERACTIVITY
+            // ----------------------------------------------------------
+            setupMouseControls();   // Drag-to-rotate (molecule only)
+            setupWindowResize();    // Responsive canvas on resize
+        }
+
+        // ==============================================================
+        // LIGHTING
+        // Two lights are used:
+        //   • AmbientLight  – soft fill so no area is completely black
+        //   • DirectionalLight – main "sun" light that casts shadows
+        //   • Secondary DirectionalLight – subtle fill from other side
+        // ==============================================================
+        function createLighting() {
+
+            // --- Ambient Light ---
+            // Low-intensity light that illuminates all surfaces equally.
+            // Prevents the dark side of objects from being pure black.
+            const ambient = new THREE.AmbientLight(0x404040, 0.5);
+            scene.add(ambient);
+
+            // --- Main Directional Light (shadow-casting) ---
+            // Acts like sunlight: parallel rays from a fixed direction.
+            const mainLight = new THREE.DirectionalLight(0xffffff, 1.3);
+            mainLight.position.set(5, 12, 7);  // Above-right, slightly in front
+            mainLight.castShadow = true;        // This light produces shadows
+
+            // Shadow camera bounds (orthographic box around scene)
+            mainLight.shadow.camera.left   = -8;
+            mainLight.shadow.camera.right  =  8;
+            mainLight.shadow.camera.top    =  8;
+            mainLight.shadow.camera.bottom = -8;
+            mainLight.shadow.camera.near   =  0.5;
+            mainLight.shadow.camera.far    =  30;
+
+            // High-resolution shadow map for crisp edges
+            mainLight.shadow.mapSize.width  = 2048;
+            mainLight.shadow.mapSize.height = 2048;
+            mainLight.shadow.bias = -0.0005;  // Reduces shadow acne artifacts
+            scene.add(mainLight);
+
+            // --- Secondary Fill Light (no shadows) ---
+            // Gently illuminates the left/back side for depth perception.
+            const fillLight = new THREE.DirectionalLight(0xffffff, 0.35);
+            fillLight.position.set(-4, 6, -5);
+            scene.add(fillLight);
+        }
+
+        // ==============================================================
+        // GROUND PLANE
+        // A large flat green surface positioned below the molecule.
+        //   • Receives shadows cast by the molecule
+        //   • Does NOT move when the user drags the mouse
+        //   • Added directly to the scene (not to moleculeGroup)
+        // ==============================================================
+        function createGroundPlane() {
+
+            // Large plane geometry (width 40 × depth 40 units)
+            const geometry = new THREE.PlaneGeometry(40, 40);
+
+            // Phong material gives specular highlights (shiny floor effect)
+            const material = new THREE.MeshPhongMaterial({
+                color:     0x00aa00,    // Bright green
+                specular:  0x226622,    // Greenish specular highlight
+                shininess: 50,          // Moderate gloss
+                side: THREE.DoubleSide  // Visible from above and below
+            });
+
+            const plane = new THREE.Mesh(geometry, material);
+
+            // Rotate the plane from vertical (XY) to horizontal (XZ)
+            plane.rotation.x = -Math.PI / 2;
+
+            // Position below the molecule so shadows are visible
+            plane.position.y = -2.8;
+
+            // IMPORTANT: the plane RECEIVES shadows but does not cast them
+            plane.receiveShadow = true;
+
+            // Added to the SCENE, not the molecule group – stays fixed
+            scene.add(plane);
+        }
+
+        // ==============================================================
+        // METHANE MOLECULE  (CH₄)
+        //
+        // Structure:
+        //   Central carbon atom surrounded by four hydrogen atoms in a
+        //   perfect tetrahedral arrangement (bond angle ≈ 109.47°).
+        //
+        // Implementation:
+        //   All atoms and bonds are added to a THREE.Group called
+        //   "moleculeGroup". Only this group is rotated by mouse
+        //   controls and the animation loop, ensuring the plane and
+        //   lights remain stationary.
+        // ==============================================================
+        function createMethaneMolecule() {
+
+            // Create the group that will hold every part of the molecule
+            moleculeGroup = new THREE.Group();
+
+            // ----------------------------------------------------------
+            // CARBON ATOM  (Red – center of molecule)
+            // ----------------------------------------------------------
+            const carbonGeo = new THREE.SphereGeometry(
+                CARBON_RADIUS,   // radius
+                SPHERE_SEGMENTS, // width segments
+                SPHERE_SEGMENTS  // height segments
+            );
+            const carbonMat = new THREE.MeshPhongMaterial({
+                color:     0xcc0000,  // Deep red
+                specular:  0x771111,  // Red specular highlight
+                shininess: 100,       // Very glossy surface
+                emissive:  0x220000   // Subtle red self-illumination
+            });
+            const carbonAtom = new THREE.Mesh(carbonGeo, carbonMat);
+            carbonAtom.castShadow    = true;  // Casts shadow on plane
+            carbonAtom.receiveShadow = true;  // Can receive shadows from bonds
+            moleculeGroup.add(carbonAtom);     // Placed at local origin (0,0,0)
+
+            // ----------------------------------------------------------
+            // TETRAHEDRAL DIRECTIONS  (unit vectors)
+            //
+            // A regular tetrahedron can be oriented so that one vertex
+            // points straight up along +Y. The remaining three vertices
+            // sit below the center, equally spaced 120° apart in azimuth.
+            //
+            // Derivation:
+            //   cos(tetrahedral angle) = -1/3
+            //   y-component of lower verts = -1/3
+            //   radial distance in XZ      = 2√2 / 3
+            // ----------------------------------------------------------
+            const sqrt2 = Math.sqrt(2);
+            const sqrt6 = Math.sqrt(6);
+
+            const directions = [
+                // Vertex 1 – straight up
+                new THREE.Vector3(0, 1, 0),
+
+                // Vertex 2 – front-bottom
+                new THREE.Vector3(0, -1 / 3, (2 * sqrt2) / 3),
+
+                // Vertex 3 – left-back-bottom
+                new THREE.Vector3(-sqrt6 / 3, -1 / 3, -sqrt2 / 3),
+
+                // Vertex 4 – right-back-bottom
+                new THREE.Vector3(sqrt6 / 3, -1 / 3, -sqrt2 / 3)
+            ];
+
+            // ----------------------------------------------------------
+            // HYDROGEN MATERIAL  (Blue – shared by all four H atoms)
+            // ----------------------------------------------------------
+            const hydrogenMat = new THREE.MeshPhongMaterial({
+                color:     0x0055ff,  // Vivid blue
+                specular:  0x2244aa,  // Blue specular highlight
+                shininess: 100,       // Glossy
+                emissive:  0x000044   // Faint blue glow
+            });
+
+            // ----------------------------------------------------------
+            // BOND MATERIAL  (White body, light-gray emissive)
+            // ----------------------------------------------------------
+            const bondMat = new THREE.MeshPhongMaterial({
+                color:     0xffffff,  // White
+                specular:  0x999999,  // Bright specular
+                shininess: 80,        // Moderately glossy
+                emissive:  0x888888   // Light gray emissive (self-glow)
+            });
+
+            // ----------------------------------------------------------
+            // CREATE EACH HYDROGEN ATOM + ITS BOND
+            // Loop over the four tetrahedral directions.
+            // ----------------------------------------------------------
+            directions.forEach((dir, index) => {
+
+                // -------- Hydrogen position --------
+                // Scale the unit direction vector by the bond length to
+                // place the hydrogen at the correct distance from carbon.
+                const hPos = dir.clone().multiplyScalar(BOND_LENGTH);
+
+                // -------- Hydrogen Sphere --------
+                const hGeo  = new THREE.SphereGeometry(
+                    HYDROGEN_RADIUS, SPHERE_SEGMENTS, SPHERE_SEGMENTS
+                );
+                const hAtom = new THREE.Mesh(hGeo, hydrogenMat);
+                hAtom.position.copy(hPos);
+                hAtom.castShadow    = true;
+                hAtom.receiveShadow = true;
+                moleculeGroup.add(hAtom);
+
+                // -------- Bond Cylinder --------
+                // The cylinder connects the center of the carbon atom
+                // to the center of this hydrogen atom.
+                // It is positioned at the midpoint and rotated to align
+                // with the bond direction, making it perpendicular to
+                // both sphere surfaces and passing through their centers.
+
+                const bondGeo = new THREE.CylinderGeometry(
+                    BOND_RADIUS,  // top radius
+                    BOND_RADIUS,  // bottom radius  (uniform cylinder)
+                    BOND_LENGTH,  // height = distance between atom centers
+                    CYL_SEGMENTS  // radial segments
+                );
+                const bond = new THREE.Mesh(bondGeo, bondMat);
+
+                // Position at midpoint between carbon (origin) and hydrogen
+                bond.position.copy(hPos.clone().multiplyScalar(0.5));
+
+                // Rotate cylinder from its default Y-axis orientation
+                // to align with the current bond direction vector.
+                const yAxis      = new THREE.Vector3(0, 1, 0);
+                const bondDir    = dir.clone().normalize();
+                const quaternion = new THREE.Quaternion();
+                quaternion.setFromUnitVectors(yAxis, bondDir);
+                bond.quaternion.copy(quaternion);
+
+                bond.castShadow    = true;
+                bond.receiveShadow = true;
+                moleculeGroup.add(bond);
+            });
+
+            // ----------------------------------------------------------
+            // POSITION THE MOLECULE GROUP
+            // Raise it above the plane so shadows are clearly visible.
+            // ----------------------------------------------------------
+            moleculeGroup.position.y = 1.2;
+
+            // Add the assembled group to the scene
+            scene.add(moleculeGroup);
+        }
+
+        // ==============================================================
+        // MOUSE / TOUCH CONTROLS
+        //
+        // The user can click-and-drag (or touch-drag on mobile) to
+        // rotate the methane molecule in any direction.
+        //
+        // IMPORTANT DESIGN DECISION:
+        //   Rotation is applied ONLY to "moleculeGroup". The ground
+        //   plane and lights are part of the scene root, so they remain
+        //   completely stationary during user interaction.
+        // ==============================================================
+        function setupMouseControls() {
+            const canvas = renderer.domElement;
+
+            // Rotation sensitivity: radians per pixel of mouse movement
+            const ROTATION_SPEED = 0.008;
+
+            // ---------- MOUSE EVENTS ----------
+
+            // When the user presses the mouse button, begin tracking
+            canvas.addEventListener('mousedown', (event) => {
+                isDragging = true;
+                previousMousePos = { x: event.clientX, y: event.clientY };
+            });
+
+            // While dragging, compute delta and rotate the molecule group
+            canvas.addEventListener('mousemove', (event) => {
+                if (!isDragging) return;
+
+                // How many pixels the mouse moved since last event
+                const dx = event.clientX - previousMousePos.x;
+                const dy = event.clientY - previousMousePos.y;
+
+                // Horizontal drag → rotate around world Y-axis
+                // Vertical drag   → rotate around world X-axis
+                moleculeGroup.rotation.y += dx * ROTATION_SPEED;
+                moleculeGroup.rotation.x += dy * ROTATION_SPEED;
+
+                // Store current position for next delta calculation
+                previousMousePos = { x: event.clientX, y: event.clientY };
+            });
+
+            // Stop tracking when the button is released
+            canvas.addEventListener('mouseup',    () => { isDragging = false; });
+            // Stop tracking if the pointer leaves the canvas entirely
+            canvas.addEventListener('mouseleave',  () => { isDragging = false; });
+
+            // ---------- TOUCH EVENTS (mobile support) ----------
+
+            canvas.addEventListener('touchstart', (e) => {
+                isDragging = true;
+                previousMousePos = {
+                    x: e.touches[0].clientX,
+                    y: e.touches[0].clientY
+                };
+            });
+
+            canvas.addEventListener('touchmove', (e) => {
+                if (!isDragging) return;
+                const dx = e.touches[0].clientX - previousMousePos.x;
+                const dy = e.touches[0].clientY - previousMousePos.y;
+
+                moleculeGroup.rotation.y += dx * ROTATION_SPEED;
+                moleculeGroup.rotation.x += dy * ROTATION_SPEED;
+
+                previousMousePos = {
+                    x: e.touches[0].clientX,
+                    y: e.touches[0].clientY
+                };
+            });
+
+            canvas.addEventListener('touchend', () => { isDragging = false; });
+        }
+
+        // ==============================================================
+        // WINDOW RESIZE HANDLER
+        // Keeps the camera aspect ratio and renderer size in sync with
+        // the browser viewport whenever the user resizes the window.
+        // ==============================================================
+        function setupWindowResize() {
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        // ==============================================================
+        // ANIMATION LOOP
+        //
+        // Called ~60 times per second via requestAnimationFrame.
+        //   • Applies a slow automatic Y-axis rotation to the molecule
+        //     so it gently spins when the user is not interacting.
+        //   • Renders the scene from the camera's perspective each frame.
+        // ==============================================================
+        function animate() {
+            // Schedule the next frame (recursive loop)
+            requestAnimationFrame(animate);
+
+            // Automatic rotation: gentle spin when NOT being dragged
+            // This keeps the model visually dynamic at idle
+            if (!isDragging) {
+                moleculeGroup.rotation.y += 0.006;  // ~0.34° per frame
+            }
+
+            // Draw the scene
+            renderer.render(scene, camera);
+        }
+
+        // ==============================================================
+        // APPLICATION ENTRY POINT
+        // ==============================================================
+        init();      // Build everything
+        animate();   // Start the render loop
+
+    </script>
+</body>
+</html>
